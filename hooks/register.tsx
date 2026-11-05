@@ -1,4 +1,3 @@
-import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement, RenderInput, RenderNode } from 'claude-code'
 
 import { fitCells, prepareFromBase64, prepareFromPath } from './prepare'
@@ -10,7 +9,19 @@ const DefaultMaxRows = 20
 const MaxColumns = 120
 const StoreKey = 'maxRows'
 
-const maxRows = atom({ plugin: 'inline-images', key: 'maxRows' } as const, DefaultMaxRows)
+// Cached copy of the stored setting; a hot reload drops it and the store is read again.
+let maxRowsCache: number | undefined
+
+async function maxRows($: EngineInterface): Promise<number>
+{
+    if (maxRowsCache === undefined)
+    {
+        const stored = Number(await $.store.get(StoreKey))
+        maxRowsCache = Number.isInteger(stored) && stored >= 2 && stored <= 255 ? stored : DefaultMaxRows
+    }
+
+    return maxRowsCache
+}
 
 type Mode = 'auto' | 'inline' | 'pane'
 type Backend = 'inline' | 'pane' | 'open' | 'none'
@@ -176,7 +187,7 @@ async function drawUnder(
     const { Box, Image, Text } = $.ui.resolve(e)
     const room = {
         columns: Math.max(8, Math.min(MaxColumns, (e.viewport?.columns ?? 80) - 6)),
-        maxRows: await read($, maxRows),
+        maxRows: await maxRows($),
     }
     const pictures = await Promise.all(sources.map(async (source, index) =>
     {
@@ -205,11 +216,6 @@ export const register: Register = on =>
 {
     on('session.start', async ($, e, next) =>
     {
-        const stored = Number(await $.store.get(StoreKey))
-        if (stored > 0)
-        {
-            await update($, maxRows, () => stored)
-        }
         await $.tool.register({
             name: ToolName,
             description:
@@ -245,15 +251,17 @@ export const register: Register = on =>
         const arg = e.args.trim()
         if (arg === '')
         {
-            return { text: `Inline images are at most ${await read($, maxRows)} rows tall.` }
+            return { text: `Inline images are at most ${await maxRows($)} rows tall.` }
         }
         const rows = arg === 'reset' ? DefaultMaxRows : Number(arg)
         if (!Number.isInteger(rows) || rows < 2 || rows > 255)
         {
             return { text: 'Usage: /img-size <rows 2-255> | reset' }
         }
-        await update($, maxRows, () => rows)
         await $.store.set(StoreKey, rows)
+        maxRowsCache = rows
+        // Redraw the images already on screen at the new height.
+        $.ui.invalidate('ui.render')
 
         return { text: `Inline images are now at most ${rows} rows tall.` }
     })

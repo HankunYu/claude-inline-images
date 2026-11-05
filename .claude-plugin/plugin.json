@@ -1,9 +1,11 @@
 {
   "name": "inline-images",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Draw images inline in the conversation: Read results, MCP screenshots, and a show_image tool (pane fallback in Rex)",
-  "author": { "name": "HankunYu", "url": "https://github.com/HankunYu" },
+  "author": {
+    "name": "HankunYu",
+    "url": "https://github.com/HankunYu"
+  },
   "repository": "https://github.com/HankunYu/claude-inline-images",
-  "license": "MIT",
-  "types": "./types/index.d.ts"
+  "license": "MIT"
 }
