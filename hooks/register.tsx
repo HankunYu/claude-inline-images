@@ -2,6 +2,7 @@ import type { EngineInterface, Register, RenderElement, RenderInput, RenderNode 
 
 import { fitCells, prepareFromBase64, prepareFromPath } from './prepare'
 import type { Prepared } from './prepare'
+import { Shared } from './shared'
 
 const ToolName = 'show_image'
 const FullToolName = 'mcp__inline-images__show_image'
@@ -30,12 +31,12 @@ type Source =
     | { kind: 'bytes'; base64: string; mimeType?: string; alt: string }
 
 type Terminal = { canInline: boolean; isRex: boolean; isMac: boolean }
-let terminalOf: Promise<Terminal> | undefined
+const terminals = new Shared<Terminal>()
 
 // Whether Claude Code will draw kitty placeholder images here, read once per load.
 function terminal($: EngineInterface): Promise<Terminal>
 {
-    terminalOf ??= (async () =>
+    return terminals.get('terminal', async () =>
     {
         const program = ((await $.env.get('TERM_PROGRAM')) ?? '').toLowerCase()
         const term = (await $.env.get('TERM')) ?? ''
@@ -48,9 +49,7 @@ function terminal($: EngineInterface): Promise<Terminal>
         // Claude Code snapshots its env at startup, so setting the force flag from here
         // is too late: Rex needs CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1 before `claude` starts.
         return { canInline: isForced || (isKnown && !isMultiplexed), isRex, isMac: stdout.trim() === 'Darwin' }
-    })()
-
-    return terminalOf
+    })
 }
 
 function backendFor(mode: Mode, t: Terminal): Backend

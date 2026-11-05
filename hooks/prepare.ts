@@ -1,5 +1,7 @@
 import type { EngineInterface } from 'claude-code'
 
+import { Shared } from './shared'
+
 // A picture ready for the terminal's Image element: whole PNG bytes plus its size.
 export type Prepared = { png: string; width: number; height: number }
 
@@ -11,10 +13,10 @@ const PngMagic = [0x89, 0x50, 0x4e, 0x47]
 
 type Converter = 'sips' | 'magick' | 'convert' | 'none'
 
-let converterOf: Promise<Converter> | undefined
-let cacheDirOf: Promise<string> | undefined
+const converters = new Shared<Converter>()
+const cacheDirs = new Shared<string>()
 // Keyed by source identity; a hot reload empties it, which only costs a re-convert.
-const cache = new Map<string, Promise<Prepared>>()
+const images = new Shared<Prepared>()
 
 const Base64Alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
 
@@ -56,7 +58,7 @@ export function pngSize(base64: string): { width: number; height: number } | und
 
 function detectConverter($: EngineInterface): Promise<Converter>
 {
-    converterOf ??= (async () =>
+    return converters.get('converter', async () =>
     {
         for (const name of ['sips', 'magick', 'convert'] as const)
         {
@@ -68,23 +70,19 @@ function detectConverter($: EngineInterface): Promise<Converter>
         }
 
         return 'none' as const
-    })()
-
-    return converterOf
+    })
 }
 
 function cacheDir($: EngineInterface): Promise<string>
 {
-    cacheDirOf ??= (async () =>
+    return cacheDirs.get('dir', async () =>
     {
         const tmp = ((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/+$/, '')
         const dir = `${tmp}/claude-inline-images`
         await $.process.run(['mkdir', '-p', dir])
 
         return dir
-    })()
-
-    return cacheDirOf
+    })
 }
 
 async function hashOf(text: string): Promise<string>
@@ -178,47 +176,33 @@ export async function prepareFromPath($: EngineInterface, path: string): Promise
 {
     const stat = await $.fs.stat(path)
     const key = `file:${path}:${stat.mtimeMs}:${stat.size}`
-    let entry = cache.get(key)
-    if (!entry)
-    {
-        entry = prepareFile($, path, key)
-        cache.set(key, entry)
-        entry.catch(() => cache.delete(key))
-    }
 
-    return entry
+    return images.get(key, () => prepareFile($, path, key))
 }
 
 // A picture held as base64 bytes (an MCP or tool result block).
 export async function prepareFromBase64($: EngineInterface, base64: string, mimeType: string | undefined): Promise<Prepared>
 {
     const key = `bytes:${await hashOf(base64)}`
-    let entry = cache.get(key)
-    if (!entry)
+
+    return images.get(key, async () =>
     {
-        entry = (async () =>
+        const size = pngSize(base64)
+        if (size && decodedLength(base64) <= MaxBytes && Math.max(size.width, size.height) <= MaxPixels)
         {
-            const size = pngSize(base64)
-            if (size && decodedLength(base64) <= MaxBytes && Math.max(size.width, size.height) <= MaxPixels)
-            {
-                return { png: base64, ...size }
-            }
-            // Spill to disk through base64 -d (fs.write takes text only), then convert.
-            const ext = (mimeType ?? 'image/png').split('/')[1]?.replace(/[^a-z0-9]/gi, '') || 'bin'
-            const raw = `${await cacheDir($)}/${key.slice(6)}.src.${ext}`
-            const { exitCode } = await $.process.run(['sh', '-c', 'base64 -d > "$1"', 'sh', raw], { stdin: base64 })
-            if (exitCode !== 0)
-            {
-                throw new Error('cannot decode image bytes')
-            }
+            return { png: base64, ...size }
+        }
+        // Spill to disk through base64 -d (fs.write takes text only), then convert.
+        const ext = (mimeType ?? 'image/png').split('/')[1]?.replace(/[^a-z0-9]/gi, '') || 'bin'
+        const raw = `${await cacheDir($)}/${key.slice(6)}.src.${ext}`
+        const { exitCode } = await $.process.run(['sh', '-c', 'base64 -d > "$1"', 'sh', raw], { stdin: base64 })
+        if (exitCode !== 0)
+        {
+            throw new Error('cannot decode image bytes')
+        }
 
-            return prepareFile($, raw, key)
-        })()
-        cache.set(key, entry)
-        entry.catch(() => cache.delete(key))
-    }
-
-    return entry
+        return prepareFile($, raw, key)
+    })
 }
 
 // Cell box for a picture: fit the width, keep the aspect ratio, cap the height.
