@@ -6,22 +6,38 @@ import { Shared } from './shared'
 
 const ToolName = 'show_image'
 const FullToolName = 'mcp__inline-images__show_image'
-const DefaultMaxRows = 20
-const MaxColumns = 120
-const StoreKey = 'maxRows'
+// Largest box an inline image may take, in terminal cells; /img-size changes them.
+const Limits = {
+    rows: { storeKey: 'maxRows', fallback: 20, min: 2, max: 255 },
+    columns: { storeKey: 'maxColumns', fallback: 120, min: 8, max: 255 },
+} as const
+type Limit = keyof typeof Limits
 
-// Cached copy of the stored setting; a hot reload drops it and the store is read again.
-let maxRowsCache: number | undefined
+// Cached copies of the stored settings; a hot reload drops them and the store is read again.
+const limitCache: Partial<Record<Limit, number>> = {}
 
-async function maxRows($: EngineInterface): Promise<number>
+function isValidLimit(name: Limit, value: number): boolean
 {
-    if (maxRowsCache === undefined)
+    return Number.isInteger(value) && value >= Limits[name].min && value <= Limits[name].max
+}
+
+async function limitOf($: EngineInterface, name: Limit): Promise<number>
+{
+    let value = limitCache[name]
+    if (value === undefined)
     {
-        const stored = Number(await $.store.get(StoreKey))
-        maxRowsCache = Number.isInteger(stored) && stored >= 2 && stored <= 255 ? stored : DefaultMaxRows
+        const stored = Number(await $.store.get(Limits[name].storeKey))
+        value = isValidLimit(name, stored) ? stored : Limits[name].fallback
+        limitCache[name] = value
     }
 
-    return maxRowsCache
+    return value
+}
+
+async function setLimit($: EngineInterface, name: Limit, value: number): Promise<void>
+{
+    await $.store.set(Limits[name].storeKey, value)
+    limitCache[name] = value
 }
 
 type Mode = 'auto' | 'inline' | 'pane'
@@ -185,8 +201,8 @@ async function drawUnder(
 {
     const { Box, Image, Text } = $.ui.resolve(e)
     const room = {
-        columns: Math.max(8, Math.min(MaxColumns, (e.viewport?.columns ?? 80) - 6)),
-        maxRows: await maxRows($),
+        columns: Math.max(Limits.columns.min, Math.min(await limitOf($, 'columns'), (e.viewport?.columns ?? 80) - 6)),
+        maxRows: await limitOf($, 'rows'),
     }
     const pictures = await Promise.all(sources.map(async (source, index) =>
     {
@@ -238,8 +254,8 @@ export const register: Register = on =>
         })
         await $.command.register({
             name: 'img-size',
-            description: 'Set the max height (terminal rows) of inline images',
-            argumentHint: '[rows | reset]',
+            description: 'Set the max height (rows) and width (columns) of inline images',
+            argumentHint: '[rows [columns] | reset]',
         })
 
         return next(e)
@@ -247,22 +263,34 @@ export const register: Register = on =>
 
     on('command.run', { command: 'img-size' }, async ($, e) =>
     {
-        const arg = e.args.trim()
-        if (arg === '')
+        const args = e.args.trim().split(/\s+/).filter(Boolean)
+        const describe = async () =>
+            `at most ${await limitOf($, 'rows')} rows tall and ${await limitOf($, 'columns')} columns wide`
+        if (args.length === 0)
         {
-            return { text: `Inline images are at most ${await maxRows($)} rows tall.` }
+            return { text: `Inline images are ${await describe()}.` }
         }
-        const rows = arg === 'reset' ? DefaultMaxRows : Number(arg)
-        if (!Number.isInteger(rows) || rows < 2 || rows > 255)
+
+        const reset = args.length === 1 && args[0] === 'reset'
+        const rows = reset ? Limits.rows.fallback : Number(args[0])
+        const columns = reset ? Limits.columns.fallback : args[1] === undefined ? undefined : Number(args[1])
+        if (args.length > 2 || !isValidLimit('rows', rows) || (columns !== undefined && !isValidLimit('columns', columns)))
         {
-            return { text: 'Usage: /img-size <rows 2-255> | reset' }
+            return {
+                text: `Usage: /img-size <rows ${Limits.rows.min}-${Limits.rows.max}> `
+                    + `[columns ${Limits.columns.min}-${Limits.columns.max}] | reset`,
+            }
         }
-        await $.store.set(StoreKey, rows)
-        maxRowsCache = rows
-        // Redraw the images already on screen at the new height.
+
+        await setLimit($, 'rows', rows)
+        if (columns !== undefined)
+        {
+            await setLimit($, 'columns', columns)
+        }
+        // Redraw the images already on screen at the new size.
         $.ui.invalidate('ui.render')
 
-        return { text: `Inline images are now at most ${rows} rows tall.` }
+        return { text: `Inline images are now ${await describe()}.` }
     })
 
     // A RegExp matcher: the generated MCP tool types predate this tool's registration.

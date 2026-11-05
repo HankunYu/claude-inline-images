@@ -10,8 +10,10 @@ terminal UI only shows `[Image #1]`; with this mod you see the picture itself.
 - **`show_image` tool**: Claude can show you an image without loading it into its
   own context (cheaper than Read). Inline when the terminal can draw it, otherwise a
   [Rex](https://www.superlogical.com/rex) pane beside the chat, otherwise macOS Preview.
-- **`/img-size <rows>`**: sets the maximum height of inline images (default 20 rows,
-  remembered across sessions). `/img-size reset` restores the default.
+- **`/img-size <rows> [columns]`**: sets the maximum height and, optionally, width of
+  inline images (default 20 rows and 120 columns, remembered across sessions); the width
+  never exceeds the terminal's. `/img-size` shows the current limits, `/img-size reset`
+  restores the defaults.
 
 Non-PNG images are converted with `sips` (macOS) or ImageMagick (`magick` /
 `convert`), and pictures larger than 2000 px are shrunk before sending.
