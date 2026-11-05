@@ -1,0 +1,13 @@
+{
+  "name": "claude-inline-images",
+  "description": "Claude Code mod that draws images inline in the terminal conversation",
+  "owner": {
+    "name": "HankunYu"
+  },
+  "plugins": [
+    {
+      "name": "inline-images",
+      "source": "./"
+    }
+  ]
+}
