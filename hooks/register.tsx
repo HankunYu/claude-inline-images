@@ -1,6 +1,6 @@
 import type { EngineInterface, Register, RenderElement, RenderInput, RenderNode } from 'claude-code'
 
-import { fitCells, prepareFromBase64, prepareFromPath } from './prepare'
+import { fitCells, fitPixels, prepareFromBase64, prepareFromPath } from './prepare'
 import type { Prepared } from './prepare'
 import { Shared } from './shared'
 
@@ -210,8 +210,9 @@ async function drawUnder(
         {
             const prepared = await prepare($, source)
             const cells = fitCells(prepared, room)
+            const shown = await fitPixels($, prepared, cells)
 
-            return <Image key={`img-${index}`} source={{ png: prepared.png }} columns={cells.columns} rows={cells.rows} alt={source.alt} />
+            return <Image key={`img-${index}`} source={{ png: shown.png }} columns={cells.columns} rows={cells.rows} alt={source.alt} />
         }
         catch (error)
         {

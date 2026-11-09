@@ -16,7 +16,9 @@ terminal UI only shows `[Image #1]`; with this mod you see the picture itself.
   restores the defaults.
 
 Non-PNG images are converted with `sips` (macOS) or ImageMagick (`magick` /
-`convert`), and pictures larger than 2000 px are shrunk before sending.
+`convert`), and pictures are shrunk to the box they are drawn in (about 16x32 px per
+cell, a Retina display's density) before sending, so the terminal does not rescale a
+large picture on every frame while you scroll.
 
 ## Install
 

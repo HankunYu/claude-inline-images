@@ -1,6 +1,6 @@
 {
   "name": "inline-images",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Draw images inline in the conversation: Read results, MCP screenshots, and a show_image tool (pane fallback in Rex)",
   "author": {
     "name": "HankunYu",
