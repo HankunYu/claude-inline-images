@@ -17,8 +17,10 @@ terminal UI only shows `[Image #1]`; with this mod you see the picture itself.
 
 Non-PNG images are converted with `sips` (macOS) or ImageMagick (`magick` /
 `convert`), and pictures are shrunk to the box they are drawn in (about 16x32 px per
-cell, a Retina display's density) before sending, so the terminal does not rescale a
-large picture on every frame while you scroll.
+cell, a Retina display's density). A terminal on the same machine is handed the
+picture's file path rather than its bytes: Claude Code sends a picture again each time
+scrolling brings it back into view, and a path keeps that cheap. Over ssh or inside
+tmux/screen the bytes are sent.
 
 ## Install
 

@@ -12,8 +12,8 @@ const MaxBytes = 2 * 1024 * 1024
 const MaxPixels = 2000
 const PngMagic = [0x89, 0x50, 0x4e, 0x47]
 // Device pixels one terminal cell shows: a ~13pt font on a 2x (Retina) display.
-// Pictures are shrunk to their cell box at this density before they are sent, as the
-// terminal rescales the whole picture on every frame it draws (scrolling included).
+// Pictures are shrunk to their cell box at this density: Claude Code sends a picture
+// again each time scrolling brings its row back, so every pixel past the box is waste.
 const PixelsPerColumn = 16
 const PixelsPerRow = 32
 // Not worth a re-encode when the picture is already within this much of its box.
@@ -253,8 +253,8 @@ export function shrunkSide(
 }
 
 // The picture as the terminal should get it for this cell box: no larger than the box
-// at PixelsPerColumn x PixelsPerRow, so the terminal does not rescale a huge picture
-// on every frame. Cached per source and size, so a redraw at the same size is free.
+// at PixelsPerColumn x PixelsPerRow, so no more is sent or decoded than the box shows.
+// Cached per source and size, so a redraw at the same size is free.
 export async function fitPixels(
     $: EngineInterface,
     prepared: Prepared,
@@ -283,4 +283,19 @@ export async function fitPixels(
         // Shrinking only saves work: a picture that will not shrink is shown as it is.
         return shrunk ?? prepared
     })
+}
+
+// A PNG file in the cache directory holding the picture, for a terminal that reads
+// pictures by path. Named by the picture's identity, so its content never changes;
+// written again from the bytes in hand when the temp directory was cleaned.
+export async function fileOf($: EngineInterface, prepared: Prepared): Promise<string>
+{
+    const dir = await cacheDir($)
+    const path = prepared.file?.startsWith(`${dir}/`) ? prepared.file : `${dir}/${await hashOf(prepared.key)}.png`
+    if (!(await $.fs.exists(path)))
+    {
+        await spill($, prepared.png, path)
+    }
+
+    return path
 }

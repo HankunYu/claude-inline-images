@@ -1,6 +1,6 @@
 import type { EngineInterface, Register, RenderElement, RenderInput, RenderNode } from 'claude-code'
 
-import { fitCells, fitPixels, prepareFromBase64, prepareFromPath } from './prepare'
+import { fileOf, fitCells, fitPixels, prepareFromBase64, prepareFromPath } from './prepare'
 import type { Prepared } from './prepare'
 import { Shared } from './shared'
 
@@ -46,7 +46,7 @@ type Source =
     | { kind: 'path'; path: string; alt: string }
     | { kind: 'bytes'; base64: string; mimeType?: string; alt: string }
 
-type Terminal = { canInline: boolean; isRex: boolean; isMac: boolean }
+type Terminal = { canInline: boolean; canReadFiles: boolean; isRex: boolean; isMac: boolean }
 const terminals = new Shared<Terminal>()
 
 // Whether Claude Code will draw kitty placeholder images here, read once per load.
@@ -59,12 +59,20 @@ function terminal($: EngineInterface): Promise<Terminal>
         const isForced = (await $.env.get('CLAUDE_CODE_FORCE_TERMINAL_IMAGES')) === '1'
         const isMultiplexed = (await $.env.get('TMUX')) !== undefined || term.startsWith('screen')
         const isKnown = program === 'ghostty' || program === 'kitty' || term === 'xterm-kitty'
+        const isRemote = (await $.env.get('SSH_CONNECTION')) !== undefined || (await $.env.get('SSH_TTY')) !== undefined
         const isRex = (await $.env.get('REX_SESSION')) !== undefined && (await $.env.get('REX_BLOCK')) !== undefined
         const { stdout } = await $.process.run(['uname', '-s'])
 
         // Claude Code snapshots its env at startup, so setting the force flag from here
         // is too late: Rex needs CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1 before `claude` starts.
-        return { canInline: isForced || (isKnown && !isMultiplexed), isRex, isMac: stdout.trim() === 'Darwin' }
+        return {
+            canInline: isForced || (isKnown && !isMultiplexed),
+            // A terminal on this machine opens a picture by its path; over ssh or through
+            // a multiplexer it cannot, and the bytes are sent instead.
+            canReadFiles: !isRemote && !isMultiplexed,
+            isRex,
+            isMac: stdout.trim() === 'Darwin',
+        }
     })
 }
 
@@ -197,6 +205,7 @@ async function drawUnder(
     e: RenderInput<'ToolUse' | 'ToolGroup', 'terminal'>,
     row: RenderNode | null | undefined,
     sources: Source[],
+    t: Terminal,
 ): Promise<RenderElement>
 {
     const { Box, Image, Text } = $.ui.resolve(e)
@@ -211,8 +220,13 @@ async function drawUnder(
             const prepared = await prepare($, source)
             const cells = fitCells(prepared, room)
             const shown = await fitPixels($, prepared, cells)
+            // Claude Code sends the source again whenever scrolling brings the row back:
+            // a path is a few bytes each time, the PNG itself up to megabytes.
+            const picture = t.canReadFiles
+                ? { file: await fileOf($, shown), format: 'png' as const }
+                : { png: shown.png }
 
-            return <Image key={`img-${index}`} source={{ png: shown.png }} columns={cells.columns} rows={cells.rows} alt={source.alt} />
+            return <Image key={`img-${index}`} source={picture} columns={cells.columns} rows={cells.rows} alt={source.alt} />
         }
         catch (error)
         {
@@ -350,7 +364,7 @@ export const register: Register = on =>
             return next(e)
         }
 
-        return drawUnder($, e, await next(e), sources)
+        return drawUnder($, e, await next(e), sources, t)
     })
 
     // Image reads folded into "Read 3 files": show them under the group line.
@@ -371,6 +385,6 @@ export const register: Register = on =>
             return next(e)
         }
 
-        return drawUnder($, e, await next(e), sources)
+        return drawUnder($, e, await next(e), sources, t)
     })
 }
