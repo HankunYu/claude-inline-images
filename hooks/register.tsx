@@ -1,6 +1,6 @@
 import type { EngineInterface, Register, RenderElement, RenderInput, RenderNode } from 'claude-code'
 
-import { fileOf, fitCells, fitPixels, prepareFromBase64, prepareFromPath } from './prepare'
+import { fileOf, fitCells, fitPixels, identityOf, prepareFromBase64, prepareFromPath } from './prepare'
 import type { Prepared } from './prepare'
 import { Shared } from './shared'
 
@@ -45,6 +45,18 @@ type Backend = 'inline' | 'pane' | 'open' | 'none'
 type Source =
     | { kind: 'path'; path: string; alt: string }
     | { kind: 'bytes'; base64: string; mimeType?: string; alt: string }
+
+// Pictures a Read of the main loop drew in this session: absolute path to the file's
+// identity at that read. A hot reload empties it, which only costs one repeated picture.
+const readPictures = new Map<string, string>()
+// How a show_image result starts when the picture was left to the Read that drew it.
+// The row is drawn from its stored result, so a redraw or a resumed session agrees.
+const RepeatNotice = 'Not drawn again:'
+
+function isRepeat(output: unknown): boolean
+{
+    return typeof output === 'string' && output.startsWith(RepeatNotice)
+}
 
 type Terminal = { canInline: boolean; canReadFiles: boolean; isRex: boolean; isMac: boolean }
 const terminals = new Shared<Terminal>()
@@ -147,7 +159,7 @@ function sourcesOf(tool: string, input: unknown, output: unknown, t: Terminal): 
     {
         const path = args?.path
 
-        return typeof path === 'string' && backendFor(modeOf(input), t) === 'inline'
+        return typeof path === 'string' && backendFor(modeOf(input), t) === 'inline' && !isRepeat(output)
             ? [{ kind: 'path', path, alt: `[image ${baseName(path)}]` }]
             : []
     }
@@ -252,7 +264,8 @@ export const register: Register = on =>
                 'Display an image file to the user in the terminal conversation. Use it whenever the user wants to '
                 + 'see an image (a chart, render, screenshot, downloaded picture) that you do not need to look at '
                 + 'yourself: unlike Read it puts no image into your context. Read results that are images are '
-                + 'already drawn inline automatically, so do not call this after reading the same file.',
+                + 'already drawn inline automatically, so do not call this after reading the same file: such a '
+                + 'call draws nothing unless the file changed since, or mode is "pane".',
             inputSchema: {
                 type: 'object',
                 properties: {
@@ -260,7 +273,7 @@ export const register: Register = on =>
                     mode: {
                         type: 'string',
                         enum: ['auto', 'inline', 'pane'],
-                        description: 'auto (default): inline when the terminal can draw it, else a Rex pane. pane: a full-size Rex pane beside the chat.',
+                        description: 'auto (default): inline when the terminal can draw it, else a Rex pane. pane: a full-size Rex pane beside the chat, also for a picture already shown inline.',
                     },
                 },
                 required: ['path'],
@@ -321,7 +334,8 @@ export const register: Register = on =>
         {
             return { deny: `No such file: ${path}` }
         }
-        const backend = backendFor(modeOf(input), await terminal($))
+        const t = await terminal($)
+        const backend = backendFor(modeOf(input), t)
         try
         {
             if (backend === 'pane')
@@ -338,6 +352,15 @@ export const register: Register = on =>
             {
                 return { result: `This terminal cannot draw images; tell the user the path: ${path}` }
             }
+            // The Read row drew it only where inline drawing is on; a forced inline mode
+            // elsewhere has nothing to repeat.
+            if (t.canInline && readPictures.get(path) === await identityOf($, path))
+            {
+                return {
+                    result: `${RepeatNotice} the earlier Read of ${path} already shows this picture and the file `
+                        + 'has not changed since. Use mode "pane" if the user wants a larger view.',
+                }
+            }
             const { width, height } = await prepareFromPath($, path)
 
             return { result: `Shown inline under this call (${width}x${height}px). You cannot see it yourself; do not Read it unless asked.` }
@@ -349,6 +372,27 @@ export const register: Register = on =>
     }).catch(($, e, next) =>
         next.called ? next(e) : { deny: 'inline-images: show_image failed unexpectedly.' },
     )
+
+    // Remember which pictures a Read drew, so show_image does not draw them a second time.
+    on('tool.call', { tool: 'Read' }, async ($, e, next) =>
+    {
+        const ran = await next(e)
+        // A subagent's Read has no row in the conversation, so it drew nothing.
+        if (e.agentId === undefined && ran.deny === undefined && ran.isError !== true && asRecord(ran.result)?.type === 'image')
+        {
+            try
+            {
+                const path = await absolutePath($, e.file_path)
+                readPictures.set(path, await identityOf($, path))
+            }
+            catch
+            {
+                // The file is gone already: nothing to remember.
+            }
+        }
+
+        return ran
+    })
 
     on('ui.render', { component: 'ToolUse' }, async ($, e, next) =>
     {

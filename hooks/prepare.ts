@@ -189,11 +189,18 @@ async function prepareFile($: EngineInterface, path: string, key: string): Promi
     throw new Error(`${path} stays over 2 MiB as PNG`)
 }
 
+// What a file on disk is known by: it changes when the file is written again.
+export async function identityOf($: EngineInterface, path: string): Promise<string>
+{
+    const stat = await $.fs.stat(path)
+
+    return `file:${path}:${stat.mtimeMs}:${stat.size}`
+}
+
 // A picture on disk, by absolute path.
 export async function prepareFromPath($: EngineInterface, path: string): Promise<Prepared>
 {
-    const stat = await $.fs.stat(path)
-    const key = `file:${path}:${stat.mtimeMs}:${stat.size}`
+    const key = await identityOf($, path)
 
     return images.get(key, () => prepareFile($, path, key))
 }
