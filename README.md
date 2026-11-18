@@ -10,9 +10,12 @@ terminal UI only shows `[Image #1]`; with this mod you see the picture itself.
 - **`show_image` tool**: Claude can show you an image without loading it into its
   own context (cheaper than Read). Inline when the terminal can draw it, otherwise a
   [Rex](https://www.superlogical.com/rex) pane beside the chat, otherwise macOS Preview.
-  A picture Claude has already read is not drawn a second time: the call says so and
-  draws nothing, unless the file changed since the read or `mode: "pane"` asks for the
-  full-size pane.
+  A picture already on screen is not drawn a second time, whichever call drew it (a
+  Read, an earlier `show_image`, a tool result): the call says so and draws nothing.
+  A picture is its bytes, not its path, so a copy of a file Claude has read counts as
+  the same picture, and a file written again with other bytes as a new one.
+  `mode: "pane"` still opens the full-size pane, and `mode: "inline"` draws the
+  picture inline once more.
 - **`/img-size <rows> [columns]`**: sets the maximum height and, optionally, width of
   inline images (default 20 rows and 120 columns, remembered across sessions); the width
   never exceeds the terminal's. `/img-size` shows the current limits, `/img-size reset`

@@ -1,6 +1,6 @@
 import type { EngineInterface, Register, RenderElement, RenderInput, RenderNode } from 'claude-code'
 
-import { fileOf, fitCells, fitPixels, identityOf, prepareFromBase64, prepareFromPath } from './prepare'
+import { contentOfBytes, contentOfFile, fileOf, fitCells, fitPixels, prepareFromBase64, prepareFromPath } from './prepare'
 import type { Prepared } from './prepare'
 import { Shared } from './shared'
 
@@ -42,16 +42,27 @@ async function setLimit($: EngineInterface, name: Limit, value: number): Promise
 
 type Mode = 'auto' | 'inline' | 'pane'
 type Backend = 'inline' | 'pane' | 'open' | 'none'
+// `shownBy` names the call that draws the picture, as a later repeat is told of it.
 type Source =
-    | { kind: 'path'; path: string; alt: string }
-    | { kind: 'bytes'; base64: string; mimeType?: string; alt: string }
+    | { kind: 'path'; path: string; alt: string; shownBy: string }
+    | { kind: 'bytes'; base64: string; mimeType?: string; alt: string; shownBy: string }
 
-// Pictures a Read of the main loop drew in this session: absolute path to the file's
-// identity at that read. A hot reload empties it, which only costs one repeated picture.
-const readPictures = new Map<string, string>()
-// How a show_image result starts when the picture was left to the Read that drew it.
+// Every picture drawn in this session, whichever call drew it: the hash of its bytes
+// to the call that showed it first. A picture is its bytes, not its path, so a copy
+// of a file is the picture the original was. A hot reload empties it; the rows on
+// screen fill it again as they are drawn, and until then a picture may repeat once.
+const drawn = new Map<string, string>()
+// How a show_image result starts when the picture was left to the call that drew it.
 // The row is drawn from its stored result, so a redraw or a resumed session agrees.
 const RepeatNotice = 'Not drawn again:'
+
+function remember(content: string, shownBy: string): void
+{
+    if (!drawn.has(content))
+    {
+        drawn.set(content, shownBy)
+    }
+}
 
 function isRepeat(output: unknown): boolean
 {
@@ -107,6 +118,16 @@ function asRecord(value: unknown): Record<string, unknown> | undefined
     return value !== null && typeof value === 'object' ? (value as Record<string, unknown>) : undefined
 }
 
+function readOf(path: string): string
+{
+    return `the earlier Read of ${path}`
+}
+
+function showOf(path: string): string
+{
+    return `an earlier show_image of ${path}`
+}
+
 function modeOf(input: unknown): Mode
 {
     const mode = asRecord(input)?.mode
@@ -120,7 +141,7 @@ function baseName(path: string): string
 }
 
 // Image content blocks in a tool result: MCP style ({ data, mimeType }) or Anthropic style ({ source }).
-function imageBlocksOf(output: unknown): Source[]
+function imageBlocksOf(output: unknown, shownBy: string): Source[]
 {
     const record = asRecord(output)
     const blocks = Array.isArray(output) ? output : Array.isArray(record?.content) ? (record.content as unknown[]) : []
@@ -137,7 +158,7 @@ function imageBlocksOf(output: unknown): Source[]
         const mimeType = typeof b.mimeType === 'string' ? b.mimeType : typeof source?.media_type === 'string' ? source.media_type : undefined
         if (data)
         {
-            sources.push({ kind: 'bytes', base64: data, mimeType, alt: `[image ${mimeType ?? ''}]`.replace(' ]', ']') })
+            sources.push({ kind: 'bytes', base64: data, mimeType, alt: `[image ${mimeType ?? ''}]`.replace(' ]', ']'), shownBy })
         }
     }
 
@@ -153,19 +174,21 @@ function sourcesOf(tool: string, input: unknown, output: unknown, t: Terminal): 
         const path = args?.file_path
         const isImage = asRecord(output)?.type === 'image'
 
-        return isImage && typeof path === 'string' ? [{ kind: 'path', path, alt: `[image ${baseName(path)}]` }] : []
+        return isImage && typeof path === 'string'
+            ? [{ kind: 'path', path, alt: `[image ${baseName(path)}]`, shownBy: readOf(path) }]
+            : []
     }
     if (tool === FullToolName)
     {
         const path = args?.path
 
         return typeof path === 'string' && backendFor(modeOf(input), t) === 'inline' && !isRepeat(output)
-            ? [{ kind: 'path', path, alt: `[image ${baseName(path)}]` }]
+            ? [{ kind: 'path', path, alt: `[image ${baseName(path)}]`, shownBy: showOf(path) }]
             : []
     }
     if (tool.startsWith('mcp__'))
     {
-        return imageBlocksOf(output)
+        return imageBlocksOf(output, `an earlier ${tool} result`)
     }
 
     return []
@@ -176,6 +199,11 @@ async function prepare($: EngineInterface, source: Source): Promise<Prepared>
     return source.kind === 'path'
         ? prepareFromPath($, source.path)
         : prepareFromBase64($, source.base64, source.mimeType)
+}
+
+function contentOf($: EngineInterface, source: Source): Promise<string>
+{
+    return source.kind === 'path' ? contentOfFile($, source.path) : contentOfBytes(source.base64)
 }
 
 async function absolutePath($: EngineInterface, path: string): Promise<string>
@@ -230,6 +258,9 @@ async function drawUnder(
         try
         {
             const prepared = await prepare($, source)
+            // Drawn here, so known from here on: this is what catches tool results, and
+            // what fills the record again after a reload or in a resumed session.
+            remember(await contentOf($, source), source.shownBy)
             const cells = fitCells(prepared, room)
             const shown = await fitPixels($, prepared, cells)
             // Claude Code sends the source again whenever scrolling brings the row back:
@@ -261,11 +292,15 @@ export const register: Register = on =>
         await $.tool.register({
             name: ToolName,
             description:
-                'Display an image file to the user in the terminal conversation. Use it whenever the user wants to '
-                + 'see an image (a chart, render, screenshot, downloaded picture) that you do not need to look at '
-                + 'yourself: unlike Read it puts no image into your context. Read results that are images are '
-                + 'already drawn inline automatically, so do not call this after reading the same file: such a '
-                + 'call draws nothing unless the file changed since, or mode is "pane".',
+                'Display an image file to the user in the terminal conversation. Use it for a picture (a chart, '
+                + 'render, screenshot, downloaded picture) that you do not need to look at yourself: unlike Read '
+                + 'it puts no image into your context. Each picture is shown to the user once. An image you Read '
+                + 'is already drawn inline under that Read, so after a Read never call this for the same picture: '
+                + 'not for the file you read, not for a copy of it at another path, not for a resized version or '
+                + 'a contact sheet of it. Give the user the path in your reply instead. A call for a picture '
+                + 'already on screen (the same bytes, whatever the path) draws nothing and says so. When the user '
+                + 'asks to see such a picture again, pass mode "pane" for a full-size view, or mode "inline" to '
+                + 'draw it here once more.',
             inputSchema: {
                 type: 'object',
                 properties: {
@@ -273,7 +308,7 @@ export const register: Register = on =>
                     mode: {
                         type: 'string',
                         enum: ['auto', 'inline', 'pane'],
-                        description: 'auto (default): inline when the terminal can draw it, else a Rex pane. pane: a full-size Rex pane beside the chat, also for a picture already shown inline.',
+                        description: 'auto (default): inline when the terminal can draw it, else a Rex pane; draws nothing for a picture already shown. inline: draw it inline even if it was already shown. pane: a full-size Rex pane beside the chat.',
                     },
                 },
                 required: ['path'],
@@ -334,8 +369,8 @@ export const register: Register = on =>
         {
             return { deny: `No such file: ${path}` }
         }
-        const t = await terminal($)
-        const backend = backendFor(modeOf(input), t)
+        const mode = modeOf(input)
+        const backend = backendFor(mode, await terminal($))
         try
         {
             if (backend === 'pane')
@@ -352,16 +387,20 @@ export const register: Register = on =>
             {
                 return { result: `This terminal cannot draw images; tell the user the path: ${path}` }
             }
-            // The Read row drew it only where inline drawing is on; a forced inline mode
-            // elsewhere has nothing to repeat.
-            if (t.canInline && readPictures.get(path) === await identityOf($, path))
+            // Left to choose, a picture already on screen is not drawn twice; asked for
+            // inline by name, it is: that is how the user gets one shown again.
+            const content = await contentOfFile($, path)
+            const earlier = drawn.get(content)
+            if (mode === 'auto' && earlier !== undefined)
             {
                 return {
-                    result: `${RepeatNotice} the earlier Read of ${path} already shows this picture and the file `
-                        + 'has not changed since. Use mode "pane" if the user wants a larger view.',
+                    result: `${RepeatNotice} ${earlier} already shows this picture (the same bytes). Give the user `
+                        + `the path instead: ${path}. If they ask to see it again, use mode "pane" for a larger `
+                        + 'view or mode "inline" to draw it here once more.',
                 }
             }
             const { width, height } = await prepareFromPath($, path)
+            remember(content, showOf(path))
 
             return { result: `Shown inline under this call (${width}x${height}px). You cannot see it yourself; do not Read it unless asked.` }
         }
@@ -373,7 +412,8 @@ export const register: Register = on =>
         next.called ? next(e) : { deny: 'inline-images: show_image failed unexpectedly.' },
     )
 
-    // Remember which pictures a Read drew, so show_image does not draw them a second time.
+    // Remember a picture a Read drew as soon as it is read, before its row is drawn, so a
+    // show_image right after it does not draw the picture a second time.
     on('tool.call', { tool: 'Read' }, async ($, e, next) =>
     {
         const ran = await next(e)
@@ -383,7 +423,7 @@ export const register: Register = on =>
             try
             {
                 const path = await absolutePath($, e.file_path)
-                readPictures.set(path, await identityOf($, path))
+                remember(await contentOfFile($, path), readOf(path))
             }
             catch
             {

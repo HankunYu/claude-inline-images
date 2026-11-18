@@ -18,6 +18,8 @@ const PixelsPerColumn = 16
 const PixelsPerRow = 32
 // Not worth a re-encode when the picture is already within this much of its box.
 const MinShrink = 0.9
+// Largest file read whole to tell whether its picture was shown before.
+const MaxHashedBytes = 64 * 1024 * 1024
 
 type Converter = 'sips' | 'magick' | 'convert' | 'none'
 
@@ -25,6 +27,8 @@ const converters = new Shared<Converter>()
 const cacheDirs = new Shared<string>()
 // Keyed by source identity; a hot reload empties it, which only costs a re-convert.
 const images = new Shared<Prepared>()
+// Content hashes of files, keyed by file identity.
+const contents = new Shared<string>()
 
 const Base64Alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
 
@@ -190,11 +194,32 @@ async function prepareFile($: EngineInterface, path: string, key: string): Promi
 }
 
 // What a file on disk is known by: it changes when the file is written again.
-export async function identityOf($: EngineInterface, path: string): Promise<string>
+async function identityOf($: EngineInterface, path: string): Promise<string>
 {
     const stat = await $.fs.stat(path)
 
     return `file:${path}:${stat.mtimeMs}:${stat.size}`
+}
+
+// What a picture is, wherever it is kept: the hash of its bytes. Two files with the same
+// bytes are one picture; a file written again with other bytes is another.
+export function contentOfBytes(base64: string): Promise<string>
+{
+    return hashOf(base64)
+}
+
+// The same for a file on disk, hashed once until it is written again. A file too large
+// to be worth hashing is known by its path instead, so only that file repeats itself.
+export async function contentOfFile($: EngineInterface, path: string): Promise<string>
+{
+    const identity = await identityOf($, path)
+    const { size } = await $.fs.stat(path)
+    if (size > MaxHashedBytes)
+    {
+        return identity
+    }
+
+    return contents.get(identity, async () => contentOfBytes((await $.fs.read(path, { as: 'bytes' })).base64))
 }
 
 // A picture on disk, by absolute path.
@@ -208,7 +233,7 @@ export async function prepareFromPath($: EngineInterface, path: string): Promise
 // A picture held as base64 bytes (an MCP or tool result block).
 export async function prepareFromBase64($: EngineInterface, base64: string, mimeType: string | undefined): Promise<Prepared>
 {
-    const key = `bytes:${await hashOf(base64)}`
+    const key = `bytes:${await contentOfBytes(base64)}`
 
     return images.get(key, async () =>
     {
